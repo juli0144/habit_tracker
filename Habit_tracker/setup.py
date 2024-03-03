@@ -1,47 +1,28 @@
 import customtkinter as ctk
 import json
 import datetime
-import time
 
 
-def weekday(day):
-    days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday', 'Time']
-    today = datetime.datetime.today()
-    return True if days.index(day) == today.weekday() else False
+def check_today(day, tar_time, mode):
+    today_obj = datetime.datetime.today()
+    if mode == 'day':
+        days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday', 'Time']
+        wday = today_obj.weekday()
+        return days.index(day) == wday
+    elif mode == 'time':
+        # Converts the given time in minutes
+        tar_time_obj = datetime.datetime.strptime(tar_time, "%H:%M")
+        tar_time_in_min = (tar_time_obj.hour * 60) + tar_time_obj.minute
+        # Converts current time in minutes
+        today_time_in_min = (today_obj.hour * 60) + today_obj.minute
 
+        # Calculates time diff, positive means diff to time in the past
+        timediff = tar_time_in_min - today_time_in_min
 
-def get_segment(parent, day, t):
-    # Logic for time display
-    if day == 'Time':
-        # Returns time or False to simplify shown time to every 30 min
-        if t.endswith('00') or t.endswith('30'):
-            text = t
-        else:
-            text = ''
-        segment = ctk.CTkLabel(parent, text=text, height=parent.height, width=parent.width)
+        return 15 > timediff >= 0
 
-    # Logic for rendering labels for scedule
     else:
-        try:
-            # Checks if a task exists
-            if parent.data['sced'][day][t]:
-                name = parent.data['sced'][day][t][0]
-                color = parent.data['sced'][day][t][1]
-                # Checks if it is a label of the same task
-                if parent.var == name:
-                    segment = ctk.CTkLabel(parent, text='',
-                                           fg_color=color, bg_color=color,
-                                           height=parent.height, width=parent.width)
-                else:
-                    segment = ctk.CTkLabel(parent, text=name,
-                                           fg_color=color, bg_color=color,
-                                           height=parent.height, width=parent.width)
-                parent.var = name
-        except KeyError:
-            segment = ctk.CTkLabel(parent,
-                                   text='', height=parent.height, width=parent.width)
-            parent.var = ''
-    return segment
+        print('Mode error in check_today')
 
 
 def timecount(hour, segments):
@@ -65,9 +46,11 @@ class Setup(ctk.CTkFrame):
         self.name = ctk.StringVar(self, '')
         self.error = ctk.StringVar(self, '')
 
-        label1 = ctk.CTkLabel(self, text="No users found, please enter a username")
+        label1 = ctk.CTkLabel(self, text="No users where found, please enter a username")
         entry = ctk.CTkEntry(self, textvariable=self.name)
+        entry.bind("<Return>", command=lambda eventbutton: self.setup())
         button = ctk.CTkButton(self, text='Create', command=self.setup)
+
         label2 = ctk.CTkLabel(self, textvariable=self.error)
 
         label1.grid(column=0, columnspan=2)
@@ -89,80 +72,141 @@ class Setup(ctk.CTkFrame):
             layout['usr'] = name
 
             # Puts current user into a list to make it appendable
-            useroptions = [layout]
+            users_options = [layout]
 
             # Convert pyton list into json, create a file and add the new user in it
             f = open('users.json', 'w')
-            f.write(json.dumps(useroptions, indent=1))
+            f.write(json.dumps(users_options, indent=1))
             f.close()
 
             # Writes user options to the parent and destroys self
-            self.parent.options = useroptions[0]
+            self.parent.user_options = users_options[0]
             self.destroy()
             self.parent.load_frame('main')
 
 
-class Callender(ctk.CTkScrollableFrame):
-    def __init__(self, parent, *args, **kwargs):
+class Calender(ctk.CTkScrollableFrame):
+    def __init__(self, parent, controller, *args, **kwargs):
         ctk.CTkScrollableFrame.__init__(self, parent, *args, **kwargs)
-        # List and len for rows and collumns
-        days = ['Time', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-        self.height = (parent.height - 20) / parent.segments
-        self.width = ((parent.width * 0.8)-30) / 8
-        self.data = parent.data
-        self.var = ''
-        times = timecount(parent.options['start'], parent.segments)
 
+        self.times_list = controller.time_list
+        self.height = (controller.height - 20) / controller.segments
+        self.width = ((controller.width * 0.8)-30) / 8
+        self.data = controller.data
+        self.segments = {}
+        self.refresh_interval = 10000    # ms
+
+        # Creates the segments
+        self._create_segments()
+        self.conf_all_segments()
+
+        # Starts refreshing time elements
+        self.start_refresh()
+
+    def _create_segments(self):
+        day_list = ['Time', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+
+        # Grids the segments and saves them in a dict
         column = 1
-        for d in days:
+        for d in day_list:
             row = 1
 
-            # Highlights and grids the current day
-            if weekday(d):
-                day = ctk.CTkLabel(self, text=d, height=20, width=self.width, fg_color='purple')
-            else:
-                day = ctk.CTkLabel(self, text=d, height=20, width=self.width)
-            day.grid(column=column, row=0, pady=10)
+            day_label = ctk.CTkLabel(self, height=20, width=self.width)
+            day_label.grid(column=column, row=0, pady=10)
+            temp_dict = {'top': day_label}
 
-            for t in times:
-                segment = get_segment(self, d, t)
+            for t in self.times_list:
+                segment = ctk.CTkLabel(self, height=self.height, width=self.width)
                 segment.grid(column=column, row=row)
+                temp_dict[t] = segment
                 row += 1
+            self.segments[d] = temp_dict
             column += 1
+
+    def conf_all_segments(self):
+        self._conf_top()
+        self._conf_time()
+        self.conf_tasks()
+
+    def _conf_time(self):
+        # Configures the time segments
+        for time, segment in self.segments['Time'].items():
+            if time != 'top':
+                segment.configure(text=time if time.endswith('00') or time.endswith('30') else '')
+                # Timecheck
+                if check_today(None, time, 'time'):
+                    segment.configure(fg_color='white', bg_color='white', text_color='black')
+
+    def _conf_top(self):
+        # Configuring the segments top
+        for day, segments in self.segments.items():
+            segments['top'].configure(text=day)
+            # Daycheck
+            if check_today(day, None, 'day'):
+                segments['top'].configure(fg_color='white', bg_color='white', text_color='black')
+
+    def conf_tasks(self):
+        # Configure callender segments
+        for day, segments in self.segments.items():
+            if day == 'Time':
+                continue
+
+            a_string = ''
+            for time, segment in segments.items():
+                if time == 'top':
+                    continue
+
+                try:
+                    seg_data = self.data['sced'][day][time]
+                    seg_text, seg_color = seg_data
+                    segment.configure(text=seg_text if a_string != seg_text else '',
+                                      bg_color=seg_color, fg_color=seg_color)
+                    a_string = seg_text
+                except KeyError:
+                    segment.configure(text='')
+                    a_string = ''
+
+    def start_refresh(self):
+        self.after(self.refresh_interval, self.refresh)
+
+    def refresh(self):
+        self._conf_time()
+        self._conf_top()
+        self.start_refresh()
 
 
 class Sceduler(ctk.CTkFrame):
-    def __init__(self, parent, *args, **kwargs):
+    def __init__(self, parent, controller, *args, **kwargs):
         ctk.CTkFrame.__init__(self, parent, *args, **kwargs)
-        self.day = ctk.StringVar(self, 'Monday')
-        self.name = ctk.StringVar(self)
-        self.c_pick_color = '#00cc66'
+        self.parent = controller
+        self.times_list = controller.time_list
+        self.user = controller.user
 
-        self.start = ctk.StringVar(self)
-        self.end = ctk.StringVar(self)
-        self.parent = parent
+        self.output_str = ctk.StringVar(self, '')
 
-        self.times = timecount(parent.options['start'], parent.segments)
-        self.user = parent.user
+        output_label = ctk.CTkLabel(self, textvariable=self.output_str, width=200)
+        output_label.grid(column=0, row=0)
 
-        add_scedule = AddScedFrame(self, width=parent.width)
-        add_scedule.pack()
+        self.add_scedule = AddScedFrame(self, width=200)
+        self.add_scedule.grid(column=1, row=0)
 
     def add_scedule(self):
-        times = self.times
-        name = self.name.get()
-        day = self.day.get()
-        color = self.c_pick_color
+        times = self.times_list
+        name = self.add_scedule.name.get()
+        day = self.add_scedule.day.get()
+        color = self.add_scedule.c_pick_color
 
         # Checks if value has been picked
         try:
-            start = times.index(self.start.get())
-            end = times.index(self.end.get())
+            start = times.index(self.add_scedule.start.get())
+            end = times.index(self.add_scedule.end.get())
             # Checks if scedule possible
             if start >= end:
-                print(f"junge start {start} end {end}")
+                self.output_str.set('Times are set incorrect')
             elif name == '':
-                print(f'name error')
+                self.output_str.set('Please enter a taskname')
+            elif len(name) > 10:
+                self.output_str.set('The name is too long\nPlease keep the name less then\n 10 characters')
             else:
                 for t in times[start:end]:
                     self.parent.data['sced'][day][t] = [name, color]
@@ -172,14 +216,20 @@ class Sceduler(ctk.CTkFrame):
                 file.close()
 
         except ValueError:
-            print('Pick was error')
+            self.output_str.set('Times are set incorrect')
 
 
 class AddScedFrame(ctk.CTkFrame):
     def __init__(self, parent, *args, **kwargs):
         ctk.CTkFrame.__init__(self, parent, *args, **kwargs)
         self.parent = parent
-        fg_color = parent.cget('fg_color')
+        self.c_pick_color = '#00cc66'
+        self.start = ctk.StringVar(self)
+        self.end = ctk.StringVar(self)
+        self.day = ctk.StringVar(self, 'Monday')
+        self.name = ctk.StringVar(self)
+
+        fg_color = parent.cget('fg_color')[1]
 
         # Lists for OptionMenus
         day_options = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
@@ -190,26 +240,27 @@ class AddScedFrame(ctk.CTkFrame):
         # Entry for Taskname
         name_frame = ctk.CTkFrame(self, fg_color=fg_color)
         name_label = ctk.CTkLabel(name_frame, text='Name of the Task:')
-        name_entry = ctk.CTkEntry(name_frame, textvariable=parent.name)
+        name_entry = ctk.CTkEntry(name_frame, textvariable=self.name)
 
         # Optionmenu Weekday
         day_frame = ctk.CTkFrame(self, fg_color=fg_color)
         day_label = ctk.CTkLabel(day_frame, text='Choose a day', font=('', 20))
-        day_optmenu = ctk.CTkOptionMenu(day_frame, variable=parent.day, values=day_options, font=('', 18))
+        day_optmenu = ctk.CTkOptionMenu(day_frame, variable=self.day, values=day_options, font=('', 18))
 
         # Optionmenu Starttime
         start_frame = ctk.CTkFrame(self, fg_color=fg_color)
         start_label = ctk.CTkLabel(start_frame, text='Start', font=('', 20))
-        start_optmenu = ctk.CTkComboBox(start_frame, variable=parent.start, values=parent.times, font=('', 18))
+        start_optmenu = ctk.CTkComboBox(start_frame, variable=self.start, values=parent.times_list, font=('', 18))
 
         # Optionmenu Endtime
         end_frame = ctk.CTkFrame(self, fg_color=fg_color)
         end_label = ctk.CTkLabel(end_frame, text='End', font=('', 20))
-        end_optmenu = ctk.CTkComboBox(end_frame, variable=parent.end, values=parent.times, font=('', 18))
+        end_optmenu = ctk.CTkComboBox(end_frame, variable=self.end, values=parent.times_list, font=('', 18))
 
         # Color Menu
         c_frame = ctk.CTkFrame(self, fg_color=fg_color)
-        self.c_label = ctk.CTkLabel(c_frame, textvariable=parent.name, font=('', 15), corner_radius=100, fg_color='#00cc66')
+        self.c_label = ctk.CTkLabel(c_frame, textvariable=self.name, font=('', 15), corner_radius=100,
+                                    fg_color='#00cc66')
         cn_label = ctk.CTkLabel(c_frame, text='Colorpicker')
         c_b1 = ctk.CTkButton(c_frame, text='', width=30, height=30, fg_color='#00cc66', hover_color='#006633',
                              command=lambda: self.colorpicker('#00cc66'))
@@ -284,4 +335,4 @@ class AddScedFrame(ctk.CTkFrame):
 
     def colorpicker(self, color):
         self.c_label.configure(fg_color=color)
-        self.parent.c_pick_color = color
+        self.c_pick_color = color
